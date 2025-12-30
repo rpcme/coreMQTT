@@ -2940,7 +2940,6 @@ MQTTStatus_t MQTT_DeserializeAck( const MQTTPacketInfo_t * pIncomingPacket,
                 break;
 
             case MQTT_PACKET_TYPE_UNSUBACK:
-            case MQTT_PACKET_TYPE_UNSUBACK:
             case MQTT_PACKET_TYPE_PUBACK:
             case MQTT_PACKET_TYPE_PUBREC:
             case MQTT_PACKET_TYPE_PUBREL:
