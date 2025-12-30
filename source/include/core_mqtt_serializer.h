@@ -32,6 +32,8 @@
 #ifndef CORE_MQTT_SERIALIZER_H
 #define CORE_MQTT_SERIALIZER_H
 
+#include "core_mqtt_version.h"
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -64,6 +66,10 @@
 #define MQTT_PACKET_TYPE_PINGREQ        ( ( uint8_t ) 0xC0U )  /**< @brief PINGREQ (client-to-server). */
 #define MQTT_PACKET_TYPE_PINGRESP       ( ( uint8_t ) 0xD0U )  /**< @brief PINGRESP (server-to-client). */
 #define MQTT_PACKET_TYPE_DISCONNECT     ( ( uint8_t ) 0xE0U )  /**< @brief DISCONNECT (client-to-server). */
+
+#if MQTT_VERSION == MQTT_VERSION_5_0
+#define MQTT_PACKET_TYPE_AUTH           ( ( uint8_t ) 0xF0U )  /**< @brief AUTH (bidirectional, MQTT 5 only). */
+#endif
 /** @} */
 
 /**
@@ -78,6 +84,10 @@ struct MQTTConnectInfo;
 struct MQTTSubscribeInfo;
 struct MQTTPublishInfo;
 struct MQTTPacketInfo;
+
+#if MQTT_VERSION == MQTT_VERSION_5_0
+    struct MQTT5Properties;
+#endif
 
 /**
  * @ingroup mqtt_enum_types
@@ -107,6 +117,10 @@ typedef enum MQTTStatus
     MQTTPublishRetrieveFailed       /**< User provided API to retrieve the copy of a publish while reconnecting
                                     with an unclean session has failed. */
 } MQTTStatus_t;
+
+#if MQTT_VERSION == MQTT_VERSION_5_0
+    #include "core_mqtt5_properties.h"
+#endif
 
 /**
  * @ingroup mqtt_enum_types
@@ -177,6 +191,23 @@ typedef struct MQTTConnectInfo
      * @brief Length of MQTT password. Set to 0 if not used.
      */
     uint16_t passwordLength;
+
+#if MQTT_VERSION == MQTT_VERSION_5_0
+    /**
+     * @brief MQTT 5 properties for CONNECT packet. Set to NULL if not used.
+     * Only available when MQTT_VERSION is set to MQTT_VERSION_5_0.
+     * 
+     * @note MISRA C:2012 Rule 8.13 - Pointer is const-qualified.
+     * @note Lifetime Requirements (MISRA C:2012 Rule 1.3):
+     *       - pProperties must remain valid during serialization
+     *       - pProperties must not be modified during serialization
+     *       - pProperties must not be freed while packet is in use
+     *       - Concurrent access requires external synchronization
+     * 
+     * @warning Violating these requirements results in undefined behavior.
+     */
+    const struct MQTT5Properties * pProperties;
+#endif
 } MQTTConnectInfo_t;
 
 /**
@@ -199,6 +230,28 @@ typedef struct MQTTSubscribeInfo
      * @brief Length of subscription topic filter.
      */
     uint16_t topicFilterLength;
+
+#if MQTT_VERSION == MQTT_VERSION_5_0
+    /**
+     * @brief No Local option. If true, messages published by this client
+     * are not forwarded back to it.
+     */
+    bool noLocal;
+
+    /**
+     * @brief Retain As Published option. If true, retain flag is preserved
+     * when forwarding messages.
+     */
+    bool retainAsPublished;
+
+    /**
+     * @brief Retain Handling option.
+     * 0 = Send retained messages at subscribe time
+     * 1 = Send retained messages only if subscription doesn't exist
+     * 2 = Don't send retained messages
+     */
+    uint8_t retainHandling;
+#endif
 } MQTTSubscribeInfo_t;
 
 /**
@@ -241,6 +294,23 @@ typedef struct MQTTPublishInfo
      * @brief Message payload length.
      */
     size_t payloadLength;
+
+#if MQTT_VERSION == MQTT_VERSION_5_0
+    /**
+     * @brief MQTT 5 properties for PUBLISH packet. Set to NULL if not used.
+     * Only available when MQTT_VERSION is set to MQTT_VERSION_5_0.
+     * 
+     * @note MISRA C:2012 Rule 8.13 - Pointer is const-qualified.
+     * @note Lifetime Requirements (MISRA C:2012 Rule 1.3):
+     *       - pProperties must remain valid during serialization
+     *       - pProperties must not be modified during serialization
+     *       - pProperties must not be freed while packet is in use
+     *       - Concurrent access requires external synchronization
+     * 
+     * @warning Violating these requirements results in undefined behavior.
+     */
+    const struct MQTT5Properties * pProperties;
+#endif
 } MQTTPublishInfo_t;
 
 /**
@@ -435,7 +505,12 @@ MQTTStatus_t MQTT_SerializeConnect( const MQTTConnectInfo_t * pConnectInfo,
 MQTTStatus_t MQTT_GetSubscribePacketSize( const MQTTSubscribeInfo_t * pSubscriptionList,
                                           size_t subscriptionCount,
                                           size_t * pRemainingLength,
-                                          size_t * pPacketSize );
+                                          size_t * pPacketSize
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                          ,
+                                          const struct MQTT5Properties * pProperties
+#endif
+                                          );
 /* @[declare_mqtt_getsubscribepacketsize] */
 
 /**
@@ -502,7 +577,12 @@ MQTTStatus_t MQTT_SerializeSubscribe( const MQTTSubscribeInfo_t * pSubscriptionL
                                       size_t subscriptionCount,
                                       uint16_t packetId,
                                       size_t remainingLength,
-                                      const MQTTFixedBuffer_t * pFixedBuffer );
+                                      const MQTTFixedBuffer_t * pFixedBuffer
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                      ,
+                                      const struct MQTT5Properties * pProperties
+#endif
+                                      );
 /* @[declare_mqtt_serializesubscribe] */
 
 /**
@@ -552,7 +632,12 @@ MQTTStatus_t MQTT_SerializeSubscribe( const MQTTSubscribeInfo_t * pSubscriptionL
 MQTTStatus_t MQTT_GetUnsubscribePacketSize( const MQTTSubscribeInfo_t * pSubscriptionList,
                                             size_t subscriptionCount,
                                             size_t * pRemainingLength,
-                                            size_t * pPacketSize );
+                                            size_t * pPacketSize
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                            ,
+                                            const struct MQTT5Properties * pProperties
+#endif
+                                            );
 /* @[declare_mqtt_getunsubscribepacketsize] */
 
 /**
@@ -619,7 +704,12 @@ MQTTStatus_t MQTT_SerializeUnsubscribe( const MQTTSubscribeInfo_t * pSubscriptio
                                         size_t subscriptionCount,
                                         uint16_t packetId,
                                         size_t remainingLength,
-                                        const MQTTFixedBuffer_t * pFixedBuffer );
+                                        const MQTTFixedBuffer_t * pFixedBuffer
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                        ,
+                                        const struct MQTT5Properties * pProperties
+#endif
+                                        );
 /* @[declare_mqtt_serializeunsubscribe] */
 
 /**
@@ -1087,7 +1177,12 @@ MQTTStatus_t MQTT_SerializePingreq( const MQTTFixedBuffer_t * pFixedBuffer );
 /* @[declare_mqtt_deserializepublish] */
 MQTTStatus_t MQTT_DeserializePublish( const MQTTPacketInfo_t * pIncomingPacket,
                                       uint16_t * pPacketId,
-                                      MQTTPublishInfo_t * pPublishInfo );
+                                      MQTTPublishInfo_t * pPublishInfo
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                      ,
+                                      struct MQTT5Properties * pProperties
+#endif
+                                      );
 /* @[declare_mqtt_deserializepublish] */
 
 /**
@@ -1131,7 +1226,12 @@ MQTTStatus_t MQTT_DeserializePublish( const MQTTPacketInfo_t * pIncomingPacket,
 /* @[declare_mqtt_deserializeack] */
 MQTTStatus_t MQTT_DeserializeAck( const MQTTPacketInfo_t * pIncomingPacket,
                                   uint16_t * pPacketId,
-                                  bool * pSessionPresent );
+                                  bool * pSessionPresent
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                  ,
+                                  struct MQTT5Properties * pProperties
+#endif
+                                  );
 /* @[declare_mqtt_deserializeack] */
 
 /**
@@ -1304,6 +1404,38 @@ uint8_t * MQTT_SerializeUnsubscribeHeader( size_t remainingLength,
                                            uint8_t * pIndex,
                                            uint16_t packetId );
 /** @endcond */
+
+#if MQTT_VERSION == MQTT_VERSION_5_0
+/**
+ * @brief Serialize an MQTT DISCONNECT packet.
+ *
+ * @param[in] reasonCode MQTT 5 reason code for disconnect.
+ * @param[in] pProperties MQTT 5 properties. Pass NULL if not used.
+ * @param[out] pFixedBuffer Buffer for packet serialization.
+ * @param[out] pPacketSize Size of the serialized packet.
+ *
+ * @return #MQTTSuccess or error code.
+ */
+MQTTStatus_t MQTT_SerializeDisconnect( uint8_t reasonCode,
+                                       const struct MQTT5Properties * pProperties,
+                                       const MQTTFixedBuffer_t * pFixedBuffer,
+                                       size_t * pPacketSize );
+
+/**
+ * @brief Serialize an MQTT AUTH packet.
+ *
+ * @param[in] reasonCode MQTT 5 reason code for auth.
+ * @param[in] pProperties MQTT 5 properties. Pass NULL if not used.
+ * @param[out] pFixedBuffer Buffer for packet serialization.
+ * @param[out] pPacketSize Size of the serialized packet.
+ *
+ * @return #MQTTSuccess or error code.
+ */
+MQTTStatus_t MQTT_SerializeAuth( uint8_t reasonCode,
+                                 const struct MQTT5Properties * pProperties,
+                                 const MQTTFixedBuffer_t * pFixedBuffer,
+                                 size_t * pPacketSize );
+#endif
 
 /* *INDENT-OFF* */
 #ifdef __cplusplus

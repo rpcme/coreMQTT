@@ -376,7 +376,12 @@ static MQTTStatus_t processPublishFlags( uint8_t publishFlags,
  * #MQTTBadResponse if the CONNACK packet doesn't follow MQTT spec.
  */
 static MQTTStatus_t deserializeConnack( const MQTTPacketInfo_t * pConnack,
-                                        bool * pSessionPresent );
+                                        bool * pSessionPresent
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                        ,
+                                        MQTT5Properties_t * pProperties
+#endif
+                                        );
 
 /**
  * @brief Decode the status bytes of a SUBACK packet to a #MQTTStatus_t.
@@ -402,7 +407,12 @@ static MQTTStatus_t readSubackStatus( size_t statusCount,
  * doesn't follow the MQTT spec.
  */
 static MQTTStatus_t deserializeSuback( const MQTTPacketInfo_t * pSuback,
-                                       uint16_t * pPacketIdentifier );
+                                       uint16_t * pPacketIdentifier
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                       ,
+                                       MQTT5Properties_t * pProperties
+#endif
+                                       );
 
 /**
  * @brief Deserialize a PUBLISH packet received from the server.
@@ -422,7 +432,12 @@ static MQTTStatus_t deserializeSuback( const MQTTPacketInfo_t * pSuback,
  */
 static MQTTStatus_t deserializePublish( const MQTTPacketInfo_t * pIncomingPacket,
                                         uint16_t * pPacketId,
-                                        MQTTPublishInfo_t * pPublishInfo );
+                                        MQTTPublishInfo_t * pPublishInfo
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                        ,
+                                        MQTT5Properties_t * pProperties
+#endif
+                                        );
 
 /**
  * @brief Deserialize an UNSUBACK, PUBACK, PUBREC, PUBREL, or PUBCOMP packet.
@@ -437,7 +452,12 @@ static MQTTStatus_t deserializePublish( const MQTTPacketInfo_t * pIncomingPacket
  * #MQTTBadResponse if the packet doesn't follow the MQTT spec.
  */
 static MQTTStatus_t deserializeSimpleAck( const MQTTPacketInfo_t * pAck,
-                                          uint16_t * pPacketIdentifier );
+                                          uint16_t * pPacketIdentifier
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                          ,
+                                          MQTT5Properties_t * pProperties
+#endif
+                                          );
 
 /**
  * @brief Deserialize a PINGRESP packet.
@@ -577,6 +597,30 @@ static bool calculatePublishPacketSize( const MQTTPublishInfo_t * pPublishInfo,
     {
         packetSize += sizeof( uint16_t );
     }
+
+#if MQTT_VERSION == MQTT_VERSION_5_0
+    /* Add MQTT 5 properties length if present */
+    if( pPublishInfo->pProperties != NULL )
+    {
+        /* MISRA C:2012 Rule 1.3 - Validate properties structure integrity */
+        if( ( pPublishInfo->pProperties->pProperties == NULL ) ||
+            ( pPublishInfo->pProperties->count > pPublishInfo->pProperties->capacity ) )
+        {
+            status = MQTTBadParameter;
+        }
+        else
+        {
+            size_t propertiesSize = MQTT5_GetPropertiesSize( pPublishInfo->pProperties );
+            /* Properties length field (VBI) + properties data */
+            packetSize += remainingLengthEncodedSize( propertiesSize ) + propertiesSize;
+        }
+    }
+    else
+    {
+        /* Empty properties (length = 0, encoded as single byte 0x00) */
+        packetSize += 1U;
+    }
+#endif
 
     /* Calculate the maximum allowed size of the payload for the given parameters.
      * This calculation excludes the "Remaining length" encoding, whose size is not
@@ -771,6 +815,32 @@ static void serializePublishCommon( const MQTTPublishInfo_t * pPublishInfo,
         pIndex[ 1U ] = UINT16_LOW_BYTE( packetIdentifier );
         pIndex = &pIndex[ 2U ];
     }
+
+#if MQTT_VERSION == MQTT_VERSION_5_0
+    /* Serialize MQTT 5 properties after packet ID, before payload */
+    if( pPublishInfo->pProperties != NULL )
+    {
+        size_t propertiesSize = 0;
+        MQTTStatus_t status;
+        
+        /* MISRA C:2012 Rule 1.3 - Validate properties structure integrity */
+        assert( pPublishInfo->pProperties->pProperties != NULL );
+        assert( pPublishInfo->pProperties->count <= pPublishInfo->pProperties->capacity );
+        
+        status = MQTT5_SerializeProperties( pPublishInfo->pProperties,
+                                           pIndex,
+                                           &propertiesSize );
+        assert( status == MQTTSuccess );
+        ( void ) status; /* Suppress unused variable warning */
+        pIndex += propertiesSize;
+    }
+    else
+    {
+        /* Empty properties: length = 0 */
+        *pIndex = 0x00;
+        pIndex++;
+    }
+#endif
 
     /* The payload is placed after the packet identifier.
      * Payload is copied over only if required by the flag serializePayload.
@@ -1079,15 +1149,30 @@ static void logConnackResponse( uint8_t responseCode )
 /*-----------------------------------------------------------*/
 
 static MQTTStatus_t deserializeConnack( const MQTTPacketInfo_t * pConnack,
-                                        bool * pSessionPresent )
+                                        bool * pSessionPresent
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                        ,
+                                        MQTT5Properties_t * pProperties
+#endif
+                                        )
 {
     MQTTStatus_t status = MQTTSuccess;
     const uint8_t * pRemainingData = NULL;
+    size_t dataIndex = 0;
 
     assert( pConnack != NULL );
     assert( pSessionPresent != NULL );
     pRemainingData = pConnack->pRemainingData;
 
+#if MQTT_VERSION == MQTT_VERSION_5_0
+    /* MQTT 5: Variable length due to properties */
+    if( pConnack->remainingLength < 3U ) /* Minimum: flags + reason code + properties length (0) */
+    {
+        LogError( ( "CONNACK remaining length too small: %u.",
+                    ( unsigned int ) pConnack->remainingLength ) );
+        status = MQTTBadResponse;
+    }
+#else
     /* According to MQTT 3.1.1, the second byte of CONNACK must specify a
      * "Remaining length" of 2. */
     if( pConnack->remainingLength != MQTT_PACKET_CONNACK_REMAINING_LENGTH )
@@ -1097,6 +1182,7 @@ static MQTTStatus_t deserializeConnack( const MQTTPacketInfo_t * pConnack,
 
         status = MQTTBadResponse;
     }
+#endif
 
     /* Check the reserved bits in CONNACK. The high 7 bits of the third byte
      * in CONNACK must be 0. */
@@ -1116,6 +1202,7 @@ static MQTTStatus_t deserializeConnack( const MQTTPacketInfo_t * pConnack,
             LogDebug( ( "CONNACK session present bit set." ) );
             *pSessionPresent = true;
 
+#if MQTT_VERSION != MQTT_VERSION_5_0
             /* MQTT 3.1.1 specifies that the fourth byte in CONNACK must be 0 if the
              * "Session Present" bit is set. */
             if( pRemainingData[ 1 ] != 0U )
@@ -1124,6 +1211,7 @@ static MQTTStatus_t deserializeConnack( const MQTTPacketInfo_t * pConnack,
                             ( unsigned int ) pRemainingData[ 1 ] ) );
                 status = MQTTBadResponse;
             }
+#endif
         }
         else
         {
@@ -1134,6 +1222,26 @@ static MQTTStatus_t deserializeConnack( const MQTTPacketInfo_t * pConnack,
 
     if( status == MQTTSuccess )
     {
+#if MQTT_VERSION == MQTT_VERSION_5_0
+        /* MQTT 5: Reason code (second byte) - 0x00 = success, others are errors */
+        if( pRemainingData[ 1 ] > 0U )
+        {
+            LogError( ( "CONNACK reason code indicates failure: %u.",
+                        ( unsigned int ) pRemainingData[ 1 ] ) );
+            status = MQTTServerRefused;
+        }
+        
+        dataIndex = 2; /* Skip flags and reason code */
+        
+        /* Deserialize properties if requested */
+        if( ( status == MQTTSuccess ) && ( pProperties != NULL ) )
+        {
+            size_t remainingSize = pConnack->remainingLength - dataIndex;
+            status = MQTT5_DeserializeProperties( pProperties,
+                                                 &pRemainingData[ dataIndex ],
+                                                 remainingSize );
+        }
+#else
         /* In MQTT 3.1.1, only values 0 through 5 are valid CONNACK response codes. */
         if( pRemainingData[ 1 ] > 5U )
         {
@@ -1154,6 +1262,7 @@ static MQTTStatus_t deserializeConnack( const MQTTPacketInfo_t * pConnack,
                 status = MQTTServerRefused;
             }
         }
+#endif
     }
 
     return status;
@@ -1297,11 +1406,17 @@ static MQTTStatus_t readSubackStatus( size_t statusCount,
 /*-----------------------------------------------------------*/
 
 static MQTTStatus_t deserializeSuback( const MQTTPacketInfo_t * pSuback,
-                                       uint16_t * pPacketIdentifier )
+                                       uint16_t * pPacketIdentifier
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                       ,
+                                       MQTT5Properties_t * pProperties
+#endif
+                                       )
 {
     MQTTStatus_t status = MQTTSuccess;
     size_t remainingLength;
     const uint8_t * pVariableHeader = NULL;
+    size_t headerSize = sizeof( uint16_t );
 
     assert( pSuback != NULL );
     assert( pPacketIdentifier != NULL );
@@ -1328,11 +1443,48 @@ static MQTTStatus_t deserializeSuback( const MQTTPacketInfo_t * pSuback,
         {
             status = MQTTBadResponse;
         }
+#if MQTT_VERSION == MQTT_VERSION_5_0
+        else if( pProperties != NULL )
+        {
+            /* Deserialize properties */
+            uint32_t propertiesLength;
+            size_t vbiLength;
+            
+            vbiLength = MQTT5_DecodeVariableByteInteger( &pVariableHeader[ headerSize ],
+                                                        remainingLength - headerSize,
+                                                        &propertiesLength );
+            
+            if( vbiLength == 0U )
+            {
+                status = MQTTBadResponse;
+            }
+            else
+            {
+                status = MQTT5_DeserializeProperties( pProperties,
+                                                     &pVariableHeader[ headerSize ],
+                                                     vbiLength + propertiesLength );
+                headerSize += vbiLength + propertiesLength;
+            }
+        }
+        else
+        {
+            /* Skip properties length field */
+            headerSize += 1U;
+        }
+        
+        if( status == MQTTSuccess )
+        {
+            /* MQTT 5: Reason codes (not just granted QoS) */
+            status = readSubackStatus( remainingLength - headerSize,
+                                      &pVariableHeader[ headerSize ] );
+        }
+#else
         else
         {
             status = readSubackStatus( remainingLength - sizeof( uint16_t ),
                                        &pVariableHeader[ sizeof( uint16_t ) ] );
         }
+#endif
     }
 
     return status;
@@ -1399,10 +1551,16 @@ static MQTTStatus_t validateSubscriptionSerializeParams( const MQTTSubscribeInfo
 
 static MQTTStatus_t deserializePublish( const MQTTPacketInfo_t * pIncomingPacket,
                                         uint16_t * pPacketId,
-                                        MQTTPublishInfo_t * pPublishInfo )
+                                        MQTTPublishInfo_t * pPublishInfo
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                        ,
+                                        MQTT5Properties_t * pProperties
+#endif
+                                        )
 {
     MQTTStatus_t status = MQTTSuccess;
     const uint8_t * pVariableHeader, * pPacketIdentifierHigh = NULL;
+    size_t headerSize = 0;
 
     assert( pIncomingPacket != NULL );
     assert( pPacketId != NULL );
@@ -1448,6 +1606,7 @@ static MQTTStatus_t deserializePublish( const MQTTPacketInfo_t * pIncomingPacket
          * identifier starts immediately after the topic name. */
         /* coverity[tainted_scalar] */
         pPacketIdentifierHigh = ( const uint8_t * ) ( &pPublishInfo->pTopicName[ pPublishInfo->topicNameLength ] );
+        headerSize = sizeof( uint16_t ) + pPublishInfo->topicNameLength;
 
         if( pPublishInfo->qos > MQTTQoS0 )
         {
@@ -1456,8 +1615,9 @@ static MQTTStatus_t deserializePublish( const MQTTPacketInfo_t * pIncomingPacket
             LogDebug( ( "Packet identifier %hu.",
                         ( unsigned short ) *pPacketId ) );
 
-            /* Advance pointer two bytes to start of payload as in the QoS 0 case. */
+            /* Advance pointer two bytes to start of properties/payload. */
             pPacketIdentifierHigh = &pPacketIdentifierHigh[ sizeof( uint16_t ) ];
+            headerSize += sizeof( uint16_t );
 
             /* Packet identifier cannot be 0. */
             if( *pPacketId == 0U )
@@ -1468,17 +1628,44 @@ static MQTTStatus_t deserializePublish( const MQTTPacketInfo_t * pIncomingPacket
         }
     }
 
+#if MQTT_VERSION == MQTT_VERSION_5_0
+    if( ( status == MQTTSuccess ) && ( pProperties != NULL ) )
+    {
+        size_t remainingSize = pIncomingPacket->remainingLength - headerSize;
+        uint32_t propertiesLength;
+        size_t vbiLength;
+        
+        /* Decode properties length VBI */
+        vbiLength = MQTT5_DecodeVariableByteInteger( pPacketIdentifierHigh, remainingSize, &propertiesLength );
+        
+        if( vbiLength == 0U )
+        {
+            status = MQTTBadResponse;
+        }
+        else
+        {
+            /* Deserialize properties */
+            status = MQTT5_DeserializeProperties( pProperties,
+                                                 pPacketIdentifierHigh,
+                                                 vbiLength + propertiesLength );
+            
+            /* Advance past properties */
+            pPacketIdentifierHigh = &pPacketIdentifierHigh[ vbiLength + propertiesLength ];
+            headerSize += vbiLength + propertiesLength;
+        }
+    }
+    else if( status == MQTTSuccess )
+    {
+        /* Skip properties length field (should be 0x00) */
+        pPacketIdentifierHigh = &pPacketIdentifierHigh[ 1U ];
+        headerSize += 1U;
+    }
+#endif
+
     if( status == MQTTSuccess )
     {
-        /* Calculate the length of the payload. QoS 1 or 2 PUBLISH packets contain
-         * a packet identifier, but QoS 0 PUBLISH packets do not. */
-        pPublishInfo->payloadLength = pIncomingPacket->remainingLength - pPublishInfo->topicNameLength - sizeof( uint16_t );
-
-        if( pPublishInfo->qos != MQTTQoS0 )
-        {
-            /* Two more bytes for the packet identifier. */
-            pPublishInfo->payloadLength -= sizeof( uint16_t );
-        }
+        /* Calculate the length of the payload. */
+        pPublishInfo->payloadLength = pIncomingPacket->remainingLength - headerSize;
 
         /* Set payload if it exists. */
         pPublishInfo->pPayload = ( pPublishInfo->payloadLength != 0U ) ? pPacketIdentifierHigh : NULL;
@@ -1493,13 +1680,28 @@ static MQTTStatus_t deserializePublish( const MQTTPacketInfo_t * pIncomingPacket
 /*-----------------------------------------------------------*/
 
 static MQTTStatus_t deserializeSimpleAck( const MQTTPacketInfo_t * pAck,
-                                          uint16_t * pPacketIdentifier )
+                                          uint16_t * pPacketIdentifier
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                          ,
+                                          MQTT5Properties_t * pProperties
+#endif
+                                          )
 {
     MQTTStatus_t status = MQTTSuccess;
+    size_t headerSize = sizeof( uint16_t );
 
     assert( pAck != NULL );
     assert( pPacketIdentifier != NULL );
 
+#if MQTT_VERSION == MQTT_VERSION_5_0
+    /* MQTT 5: Variable length (can have reason code + properties) */
+    if( pAck->remainingLength < 2U )
+    {
+        LogError( ( "ACK remaining length too small: %u.",
+                    ( unsigned int ) pAck->remainingLength ) );
+        status = MQTTBadResponse;
+    }
+#else
     /* Check that the "Remaining length" of the received ACK is 2. */
     if( pAck->remainingLength != MQTT_PACKET_SIMPLE_ACK_REMAINING_LENGTH )
     {
@@ -1508,6 +1710,7 @@ static MQTTStatus_t deserializeSimpleAck( const MQTTPacketInfo_t * pAck,
 
         status = MQTTBadResponse;
     }
+#endif
     else
     {
         /* Extract the packet identifier (third and fourth bytes) from ACK. */
@@ -1522,6 +1725,32 @@ static MQTTStatus_t deserializeSimpleAck( const MQTTPacketInfo_t * pAck,
             LogError( ( "Packet identifier cannot be 0." ) );
             status = MQTTBadResponse;
         }
+#if MQTT_VERSION == MQTT_VERSION_5_0
+        else if( pAck->remainingLength > 2U )
+        {
+            /* MQTT 5: Has reason code and/or properties */
+            /* Skip reason code byte */
+            headerSize += 1U;
+            
+            if( ( pAck->remainingLength > 3U ) && ( pProperties != NULL ) )
+            {
+                /* Deserialize properties */
+                uint32_t propertiesLength;
+                size_t vbiLength;
+                
+                vbiLength = MQTT5_DecodeVariableByteInteger( &pAck->pRemainingData[ headerSize ],
+                                                            pAck->remainingLength - headerSize,
+                                                            &propertiesLength );
+                
+                if( vbiLength > 0U )
+                {
+                    status = MQTT5_DeserializeProperties( pProperties,
+                                                         &pAck->pRemainingData[ headerSize ],
+                                                         vbiLength + propertiesLength );
+                }
+            }
+        }
+#endif
     }
 
     return status;
@@ -1645,6 +1874,32 @@ static void serializeConnectPacket( const MQTTConnectInfo_t * pConnectInfo,
                                                pWillInfo,
                                                remainingLength );
 
+#if MQTT_VERSION == MQTT_VERSION_5_0
+    /* Serialize MQTT 5 properties after variable header, before payload */
+    if( pConnectInfo->pProperties != NULL )
+    {
+        size_t propertiesSize = 0;
+        MQTTStatus_t status;
+        
+        /* MISRA C:2012 Rule 1.3 - Validate properties structure integrity */
+        assert( pConnectInfo->pProperties->pProperties != NULL );
+        assert( pConnectInfo->pProperties->count <= pConnectInfo->pProperties->capacity );
+        
+        status = MQTT5_SerializeProperties( pConnectInfo->pProperties,
+                                           pIndex,
+                                           &propertiesSize );
+        assert( status == MQTTSuccess );
+        ( void ) status; /* Suppress unused variable warning in release builds */
+        pIndex += propertiesSize;
+    }
+    else
+    {
+        /* Empty properties: length = 0 */
+        *pIndex = 0x00;
+        pIndex++;
+    }
+#endif
+
     /* Write the client identifier into the CONNECT packet. */
     pIndex = encodeString( pIndex,
                            pConnectInfo->pClientIdentifier,
@@ -1733,6 +1988,30 @@ MQTTStatus_t MQTT_GetConnectPacketSize( const MQTTConnectInfo_t * pConnectInfo,
     {
         /* Add the length of the client identifier. */
         connectPacketSize += pConnectInfo->clientIdentifierLength + sizeof( uint16_t );
+
+#if MQTT_VERSION == MQTT_VERSION_5_0
+        /* Add MQTT 5 properties length if present */
+        if( pConnectInfo->pProperties != NULL )
+        {
+            /* MISRA C:2012 Rule 1.3 - Validate properties structure integrity */
+            if( ( pConnectInfo->pProperties->pProperties == NULL ) ||
+                ( pConnectInfo->pProperties->count > pConnectInfo->pProperties->capacity ) )
+            {
+                status = MQTTBadParameter;
+            }
+            else
+            {
+                size_t propertiesSize = MQTT5_GetPropertiesSize( pConnectInfo->pProperties );
+                /* Properties length field (VBI) + properties data */
+                connectPacketSize += remainingLengthEncodedSize( propertiesSize ) + propertiesSize;
+            }
+        }
+        else
+        {
+            /* Empty properties (length = 0, encoded as single byte 0x00) */
+            connectPacketSize += 1U;
+        }
+#endif
 
         /* Add the lengths of the will message and topic name if provided. */
         if( pWillInfo != NULL )
@@ -1850,7 +2129,12 @@ MQTTStatus_t MQTT_SerializeConnect( const MQTTConnectInfo_t * pConnectInfo,
 MQTTStatus_t MQTT_GetSubscribePacketSize( const MQTTSubscribeInfo_t * pSubscriptionList,
                                           size_t subscriptionCount,
                                           size_t * pRemainingLength,
-                                          size_t * pPacketSize )
+                                          size_t * pPacketSize
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                          ,
+                                          const MQTT5Properties_t * pProperties
+#endif
+                                          )
 {
     MQTTStatus_t status = MQTTSuccess;
 
@@ -1878,6 +2162,21 @@ MQTTStatus_t MQTT_GetSubscribePacketSize( const MQTTSubscribeInfo_t * pSubscript
                                                   pRemainingLength,
                                                   pPacketSize,
                                                   MQTT_SUBSCRIBE );
+        
+#if MQTT_VERSION == MQTT_VERSION_5_0
+        if( ( status == MQTTSuccess ) && ( pProperties != NULL ) )
+        {
+            size_t propertiesSize = MQTT5_GetPropertiesSize( pProperties );
+            *pRemainingLength += remainingLengthEncodedSize( propertiesSize ) + propertiesSize;
+            *pPacketSize += remainingLengthEncodedSize( propertiesSize ) + propertiesSize;
+        }
+        else if( status == MQTTSuccess )
+        {
+            /* Empty properties */
+            *pRemainingLength += 1U;
+            *pPacketSize += 1U;
+        }
+#endif
     }
 
     return status;
@@ -1935,7 +2234,12 @@ MQTTStatus_t MQTT_SerializeSubscribe( const MQTTSubscribeInfo_t * pSubscriptionL
                                       size_t subscriptionCount,
                                       uint16_t packetId,
                                       size_t remainingLength,
-                                      const MQTTFixedBuffer_t * pFixedBuffer )
+                                      const MQTTFixedBuffer_t * pFixedBuffer
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                      ,
+                                      const MQTT5Properties_t * pProperties
+#endif
+                                      )
 {
     size_t i = 0;
     uint8_t * pIndex = NULL;
@@ -1956,6 +2260,23 @@ MQTTStatus_t MQTT_SerializeSubscribe( const MQTTSubscribeInfo_t * pSubscriptionL
                                                 pIndex,
                                                 packetId );
 
+#if MQTT_VERSION == MQTT_VERSION_5_0
+        /* Serialize MQTT 5 properties after packet ID */
+        if( pProperties != NULL )
+        {
+            size_t propertiesSize = 0;
+            status = MQTT5_SerializeProperties( pProperties, pIndex, &propertiesSize );
+            assert( status == MQTTSuccess );
+            ( void ) status;
+            pIndex += propertiesSize;
+        }
+        else
+        {
+            *pIndex = 0x00; /* Empty properties */
+            pIndex++;
+        }
+#endif
+
         /* Serialize each subscription topic filter and QoS. */
         for( i = 0; i < subscriptionCount; i++ )
         {
@@ -1963,8 +2284,23 @@ MQTTStatus_t MQTT_SerializeSubscribe( const MQTTSubscribeInfo_t * pSubscriptionL
                                    pSubscriptionList[ i ].pTopicFilter,
                                    pSubscriptionList[ i ].topicFilterLength );
 
-            /* Place the QoS in the SUBSCRIBE packet. */
+#if MQTT_VERSION == MQTT_VERSION_5_0
+            /* MQTT 5: Subscription options byte */
+            uint8_t options = ( uint8_t ) ( pSubscriptionList[ i ].qos & 0x03U );
+            if( pSubscriptionList[ i ].noLocal )
+            {
+                options |= 0x04U; /* Bit 2 */
+            }
+            if( pSubscriptionList[ i ].retainAsPublished )
+            {
+                options |= 0x08U; /* Bit 3 */
+            }
+            options |= ( pSubscriptionList[ i ].retainHandling & 0x03U ) << 4; /* Bits 4-5 */
+            *pIndex = options;
+#else
+            /* MQTT 3.1.1: Just QoS */
             *pIndex = ( uint8_t ) ( pSubscriptionList[ i ].qos );
+#endif
             pIndex++;
         }
 
@@ -1980,7 +2316,12 @@ MQTTStatus_t MQTT_SerializeSubscribe( const MQTTSubscribeInfo_t * pSubscriptionL
 MQTTStatus_t MQTT_GetUnsubscribePacketSize( const MQTTSubscribeInfo_t * pSubscriptionList,
                                             size_t subscriptionCount,
                                             size_t * pRemainingLength,
-                                            size_t * pPacketSize )
+                                            size_t * pPacketSize
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                            ,
+                                            const MQTT5Properties_t * pProperties
+#endif
+                                            )
 {
     MQTTStatus_t status = MQTTSuccess;
 
@@ -2008,6 +2349,20 @@ MQTTStatus_t MQTT_GetUnsubscribePacketSize( const MQTTSubscribeInfo_t * pSubscri
                                                   pRemainingLength,
                                                   pPacketSize,
                                                   MQTT_UNSUBSCRIBE );
+        
+#if MQTT_VERSION == MQTT_VERSION_5_0
+        if( ( status == MQTTSuccess ) && ( pProperties != NULL ) )
+        {
+            size_t propertiesSize = MQTT5_GetPropertiesSize( pProperties );
+            *pRemainingLength += remainingLengthEncodedSize( propertiesSize ) + propertiesSize;
+            *pPacketSize += remainingLengthEncodedSize( propertiesSize ) + propertiesSize;
+        }
+        else if( status == MQTTSuccess )
+        {
+            *pRemainingLength += 1U;
+            *pPacketSize += 1U;
+        }
+#endif
     }
 
     return status;
@@ -2019,7 +2374,12 @@ MQTTStatus_t MQTT_SerializeUnsubscribe( const MQTTSubscribeInfo_t * pSubscriptio
                                         size_t subscriptionCount,
                                         uint16_t packetId,
                                         size_t remainingLength,
-                                        const MQTTFixedBuffer_t * pFixedBuffer )
+                                        const MQTTFixedBuffer_t * pFixedBuffer
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                        ,
+                                        const MQTT5Properties_t * pProperties
+#endif
+                                        )
 {
     MQTTStatus_t status = MQTTSuccess;
     size_t i = 0;
@@ -2038,6 +2398,23 @@ MQTTStatus_t MQTT_SerializeUnsubscribe( const MQTTSubscribeInfo_t * pSubscriptio
         pIndex = pFixedBuffer->pBuffer;
 
         pIndex = MQTT_SerializeUnsubscribeHeader( remainingLength, pIndex, packetId );
+
+#if MQTT_VERSION == MQTT_VERSION_5_0
+        /* Serialize MQTT 5 properties after packet ID */
+        if( pProperties != NULL )
+        {
+            size_t propertiesSize = 0;
+            status = MQTT5_SerializeProperties( pProperties, pIndex, &propertiesSize );
+            assert( status == MQTTSuccess );
+            ( void ) status;
+            pIndex += propertiesSize;
+        }
+        else
+        {
+            *pIndex = 0x00;
+            pIndex++;
+        }
+#endif
 
         /* Serialize each subscription topic filter. */
         for( i = 0; i < subscriptionCount; i++ )
@@ -2448,7 +2825,12 @@ MQTTStatus_t MQTT_SerializePingreq( const MQTTFixedBuffer_t * pFixedBuffer )
 
 MQTTStatus_t MQTT_DeserializePublish( const MQTTPacketInfo_t * pIncomingPacket,
                                       uint16_t * pPacketId,
-                                      MQTTPublishInfo_t * pPublishInfo )
+                                      MQTTPublishInfo_t * pPublishInfo
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                      ,
+                                      MQTT5Properties_t * pProperties
+#endif
+                                      )
 {
     MQTTStatus_t status = MQTTSuccess;
 
@@ -2475,7 +2857,11 @@ MQTTStatus_t MQTT_DeserializePublish( const MQTTPacketInfo_t * pIncomingPacket,
     }
     else
     {
+#if MQTT_VERSION == MQTT_VERSION_5_0
+        status = deserializePublish( pIncomingPacket, pPacketId, pPublishInfo, pProperties );
+#else
         status = deserializePublish( pIncomingPacket, pPacketId, pPublishInfo );
+#endif
     }
 
     return status;
@@ -2485,7 +2871,12 @@ MQTTStatus_t MQTT_DeserializePublish( const MQTTPacketInfo_t * pIncomingPacket,
 
 MQTTStatus_t MQTT_DeserializeAck( const MQTTPacketInfo_t * pIncomingPacket,
                                   uint16_t * pPacketId,
-                                  bool * pSessionPresent )
+                                  bool * pSessionPresent
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                  ,
+                                  MQTT5Properties_t * pProperties
+#endif
+                                  )
 {
     MQTTStatus_t status = MQTTSuccess;
 
@@ -2527,11 +2918,19 @@ MQTTStatus_t MQTT_DeserializeAck( const MQTTPacketInfo_t * pIncomingPacket,
         switch( pIncomingPacket->type )
         {
             case MQTT_PACKET_TYPE_CONNACK:
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                status = deserializeConnack( pIncomingPacket, pSessionPresent, pProperties );
+#else
                 status = deserializeConnack( pIncomingPacket, pSessionPresent );
+#endif
                 break;
 
             case MQTT_PACKET_TYPE_SUBACK:
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                status = deserializeSuback( pIncomingPacket, pPacketId, pProperties );
+#else
                 status = deserializeSuback( pIncomingPacket, pPacketId );
+#endif
                 break;
 
             case MQTT_PACKET_TYPE_PINGRESP:
@@ -2539,11 +2938,16 @@ MQTTStatus_t MQTT_DeserializeAck( const MQTTPacketInfo_t * pIncomingPacket,
                 break;
 
             case MQTT_PACKET_TYPE_UNSUBACK:
+            case MQTT_PACKET_TYPE_UNSUBACK:
             case MQTT_PACKET_TYPE_PUBACK:
             case MQTT_PACKET_TYPE_PUBREC:
             case MQTT_PACKET_TYPE_PUBREL:
             case MQTT_PACKET_TYPE_PUBCOMP:
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                status = deserializeSimpleAck( pIncomingPacket, pPacketId, pProperties );
+#else
                 status = deserializeSimpleAck( pIncomingPacket, pPacketId );
+#endif
                 break;
 
             /* Any other packet type is invalid. */
@@ -2709,3 +3113,143 @@ MQTTStatus_t MQTT_ProcessIncomingPacketTypeAndLength( const uint8_t * pBuffer,
 }
 
 /*-----------------------------------------------------------*/
+
+#if MQTT_VERSION == MQTT_VERSION_5_0
+
+MQTTStatus_t MQTT_SerializeDisconnect( uint8_t reasonCode,
+                                       const MQTT5Properties_t * pProperties,
+                                       const MQTTFixedBuffer_t * pFixedBuffer,
+                                       size_t * pPacketSize )
+{
+    MQTTStatus_t status = MQTTSuccess;
+    size_t remainingLength = 0;
+    size_t propertiesSize = 0;
+    uint8_t * pIndex = NULL;
+
+    if( ( pFixedBuffer == NULL ) || ( pPacketSize == NULL ) || ( pFixedBuffer->pBuffer == NULL ) )
+    {
+        status = MQTTBadParameter;
+    }
+    else
+    {
+        /* Calculate remaining length */
+        if( reasonCode != 0x00U || pProperties != NULL )
+        {
+            remainingLength = 1U; /* Reason code */
+            
+            if( pProperties != NULL )
+            {
+                propertiesSize = MQTT5_GetPropertiesSize( pProperties );
+                remainingLength += remainingLengthEncodedSize( propertiesSize ) + propertiesSize;
+            }
+            else
+            {
+                remainingLength += 1U; /* Empty properties */
+            }
+        }
+        
+        *pPacketSize = 1U + remainingLengthEncodedSize( remainingLength ) + remainingLength;
+        
+        if( *pPacketSize > pFixedBuffer->size )
+        {
+            status = MQTTNoMemory;
+        }
+        else
+        {
+            pIndex = pFixedBuffer->pBuffer;
+            
+            /* Fixed header */
+            *pIndex = MQTT_PACKET_TYPE_DISCONNECT;
+            pIndex++;
+            
+            /* Remaining length */
+            pIndex = encodeRemainingLength( pIndex, remainingLength );
+            
+            if( remainingLength > 0U )
+            {
+                /* Reason code */
+                *pIndex = reasonCode;
+                pIndex++;
+                
+                /* Properties */
+                if( pProperties != NULL )
+                {
+                    status = MQTT5_SerializeProperties( pProperties, pIndex, &propertiesSize );
+                }
+                else
+                {
+                    *pIndex = 0x00;
+                }
+            }
+        }
+    }
+    
+    return status;
+}
+
+/*-----------------------------------------------------------*/
+
+MQTTStatus_t MQTT_SerializeAuth( uint8_t reasonCode,
+                                 const MQTT5Properties_t * pProperties,
+                                 const MQTTFixedBuffer_t * pFixedBuffer,
+                                 size_t * pPacketSize )
+{
+    MQTTStatus_t status = MQTTSuccess;
+    size_t remainingLength = 1U; /* Reason code always present */
+    size_t propertiesSize = 0;
+    uint8_t * pIndex = NULL;
+
+    if( ( pFixedBuffer == NULL ) || ( pPacketSize == NULL ) || ( pFixedBuffer->pBuffer == NULL ) )
+    {
+        status = MQTTBadParameter;
+    }
+    else
+    {
+        /* Calculate remaining length */
+        if( pProperties != NULL )
+        {
+            propertiesSize = MQTT5_GetPropertiesSize( pProperties );
+            remainingLength += remainingLengthEncodedSize( propertiesSize ) + propertiesSize;
+        }
+        else
+        {
+            remainingLength += 1U; /* Empty properties */
+        }
+        
+        *pPacketSize = 1U + remainingLengthEncodedSize( remainingLength ) + remainingLength;
+        
+        if( *pPacketSize > pFixedBuffer->size )
+        {
+            status = MQTTNoMemory;
+        }
+        else
+        {
+            pIndex = pFixedBuffer->pBuffer;
+            
+            /* Fixed header */
+            *pIndex = MQTT_PACKET_TYPE_AUTH;
+            pIndex++;
+            
+            /* Remaining length */
+            pIndex = encodeRemainingLength( pIndex, remainingLength );
+            
+            /* Reason code */
+            *pIndex = reasonCode;
+            pIndex++;
+            
+            /* Properties */
+            if( pProperties != NULL )
+            {
+                status = MQTT5_SerializeProperties( pProperties, pIndex, &propertiesSize );
+            }
+            else
+            {
+                *pIndex = 0x00;
+            }
+        }
+    }
+    
+    return status;
+}
+
+#endif /* MQTT_VERSION == MQTT_VERSION_5_0 */

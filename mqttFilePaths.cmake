@@ -14,6 +14,12 @@ set( MQTT_SOURCES
 set( MQTT_SERIALIZER_SOURCES
      "${CMAKE_CURRENT_LIST_DIR}/source/core_mqtt_serializer.c" )
 
+# MQTT 5 Properties library source files (optional, enabled with MQTT_VERSION_5).
+if( MQTT_VERSION_5 )
+    list( APPEND MQTT_SOURCES
+          "${CMAKE_CURRENT_LIST_DIR}/source/core_mqtt5_properties.c" )
+endif()
+
 # MQTT library Public Include directories.
 set( MQTT_INCLUDE_PUBLIC_DIRS
      "${CMAKE_CURRENT_LIST_DIR}/source/include"
