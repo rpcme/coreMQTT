@@ -3083,7 +3083,11 @@ MQTTStatus_t MQTT_Subscribe( MQTTContext_t * pContext,
         status = MQTT_GetSubscribePacketSize( pSubscriptionList,
                                               subscriptionCount,
                                               &remainingLength,
-                                              &packetSize );
+                                              &packetSize
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                              , NULL
+#endif
+                                              );
         LogDebug( ( "SUBSCRIBE packet size is %lu and remaining length is %lu.",
                     ( unsigned long ) packetSize,
                     ( unsigned long ) remainingLength ) );
@@ -3348,7 +3352,11 @@ MQTTStatus_t MQTT_Unsubscribe( MQTTContext_t * pContext,
         status = MQTT_GetUnsubscribePacketSize( pSubscriptionList,
                                                 subscriptionCount,
                                                 &remainingLength,
-                                                &packetSize );
+                                                &packetSize
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                                , NULL
+#endif
+                                                );
         LogDebug( ( "UNSUBSCRIBE packet size is %lu and remaining length is %lu.",
                     ( unsigned long ) packetSize,
                     ( unsigned long ) remainingLength ) );
