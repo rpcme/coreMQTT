@@ -3421,7 +3421,11 @@ MQTTStatus_t MQTT_Disconnect( MQTTContext_t * pContext )
     if( status == MQTTSuccess )
     {
         /* Serialize MQTT DISCONNECT packet. */
+#if MQTT_VERSION == MQTT_VERSION_5_0
+        status = MQTT_SerializeDisconnect( 0, NULL, &localBuffer, &packetSize );
+#else
         status = MQTT_SerializeDisconnect( &localBuffer );
+#endif
     }
 
     if( status == MQTTSuccess )
