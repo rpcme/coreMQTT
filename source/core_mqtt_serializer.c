@@ -2717,6 +2717,7 @@ MQTTStatus_t MQTT_GetDisconnectPacketSize( size_t * pPacketSize )
 
 /*-----------------------------------------------------------*/
 
+#if MQTT_VERSION != MQTT_VERSION_5_0
 MQTTStatus_t MQTT_SerializeDisconnect( const MQTTFixedBuffer_t * pFixedBuffer )
 {
     MQTTStatus_t status = MQTTSuccess;
@@ -2757,6 +2758,7 @@ MQTTStatus_t MQTT_SerializeDisconnect( const MQTTFixedBuffer_t * pFixedBuffer )
 
     return status;
 }
+#endif
 
 /*-----------------------------------------------------------*/
 
