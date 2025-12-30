@@ -1454,7 +1454,11 @@ static MQTTStatus_t handleIncomingPublish( MQTTContext_t * pContext,
     assert( pIncomingPacket != NULL );
     assert( pContext->appCallback != NULL );
 
-    status = MQTT_DeserializePublish( pIncomingPacket, &packetIdentifier, &publishInfo );
+    status = MQTT_DeserializePublish( pIncomingPacket, &packetIdentifier, &publishInfo
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                      , NULL
+#endif
+                                      );
     LogInfo( ( "De-serialized incoming PUBLISH packet: DeserializerResult=%s.",
                MQTT_Status_strerror( status ) ) );
 
@@ -1586,7 +1590,11 @@ static MQTTStatus_t handlePublishAcks( MQTTContext_t * pContext,
     appCallback = pContext->appCallback;
 
     ackType = getAckFromPacketType( pIncomingPacket->type );
-    status = MQTT_DeserializeAck( pIncomingPacket, &packetIdentifier, NULL );
+    status = MQTT_DeserializeAck( pIncomingPacket, &packetIdentifier, NULL
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                      , NULL
+#endif
+                                      );
     LogInfo( ( "Ack packet deserialized with result: %s.",
                MQTT_Status_strerror( status ) ) );
 
@@ -1685,7 +1693,11 @@ static MQTTStatus_t handleIncomingAck( MQTTContext_t * pContext,
             break;
 
         case MQTT_PACKET_TYPE_PINGRESP:
-            status = MQTT_DeserializeAck( pIncomingPacket, &packetIdentifier, NULL );
+            status = MQTT_DeserializeAck( pIncomingPacket, &packetIdentifier, NULL
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                      , NULL
+#endif
+                                      );
             invokeAppCallback = ( status == MQTTSuccess ) && !manageKeepAlive;
 
             if( ( status == MQTTSuccess ) && ( manageKeepAlive == true ) )
@@ -1698,7 +1710,11 @@ static MQTTStatus_t handleIncomingAck( MQTTContext_t * pContext,
         case MQTT_PACKET_TYPE_SUBACK:
         case MQTT_PACKET_TYPE_UNSUBACK:
             /* Deserialize and give these to the app provided callback. */
-            status = MQTT_DeserializeAck( pIncomingPacket, &packetIdentifier, NULL );
+            status = MQTT_DeserializeAck( pIncomingPacket, &packetIdentifier, NULL
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                      , NULL
+#endif
+                                      );
             invokeAppCallback = ( status == MQTTSuccess ) || ( status == MQTTServerRefused );
             break;
 
@@ -2505,7 +2521,11 @@ static MQTTStatus_t receiveConnack( MQTTContext_t * pContext,
         pIncomingPacket->pRemainingData = pContext->networkBuffer.pBuffer;
 
         /* Deserialize CONNACK. */
-        status = MQTT_DeserializeAck( pIncomingPacket, NULL, pSessionPresent );
+        status = MQTT_DeserializeAck( pIncomingPacket, NULL, pSessionPresent
+#if MQTT_VERSION == MQTT_VERSION_5_0
+                                      , NULL
+#endif
+                                      );
     }
 
     /* If a clean session is requested, a session present should not be set by
