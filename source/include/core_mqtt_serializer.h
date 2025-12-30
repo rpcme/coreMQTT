@@ -1423,9 +1423,8 @@ MQTTStatus_t MQTT_SerializeDisconnect( uint8_t reasonCode,
                                        const struct MQTT5Properties * pProperties,
                                        const MQTTFixedBuffer_t * pFixedBuffer,
                                        size_t * pPacketSize );
-
-/**
 #endif
+
  * @brief Serialize an MQTT AUTH packet.
  *
  * @param[in] reasonCode MQTT 5 reason code for auth.
