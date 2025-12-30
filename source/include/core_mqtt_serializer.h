@@ -1045,8 +1045,10 @@ MQTTStatus_t MQTT_GetDisconnectPacketSize( size_t * pPacketSize );
  * @endcode
  */
 /* @[declare_mqtt_serializedisconnect] */
+#if MQTT_VERSION != MQTT_VERSION_5_0
 MQTTStatus_t MQTT_SerializeDisconnect( const MQTTFixedBuffer_t * pFixedBuffer );
 /* @[declare_mqtt_serializedisconnect] */
+#endif
 
 /**
  * @brief Get the size of an MQTT PINGREQ packet.
@@ -1416,12 +1418,14 @@ uint8_t * MQTT_SerializeUnsubscribeHeader( size_t remainingLength,
  *
  * @return #MQTTSuccess or error code.
  */
+#if MQTT_VERSION == MQTT_VERSION_5_0
 MQTTStatus_t MQTT_SerializeDisconnect( uint8_t reasonCode,
                                        const struct MQTT5Properties * pProperties,
                                        const MQTTFixedBuffer_t * pFixedBuffer,
                                        size_t * pPacketSize );
 
 /**
+#endif
  * @brief Serialize an MQTT AUTH packet.
  *
  * @param[in] reasonCode MQTT 5 reason code for auth.
